@@ -3,26 +3,23 @@ import requests
 import smtplib
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from bs4 import BeautifulSoup
 import google.generativeai as genai
 
-# --- 1. CONFIGURATION & BRANDING ---
+# --- 1. CONFIGURATION & STYLING ---
 st.set_page_config(page_title="AlationDoc Communicator", page_icon="📑", layout="wide")
 
 st.markdown("""
     <style>
-    .stButton>button { width: 100%; border-radius: 5px; background-color: #1E293B; color: white; }
-    .stTextArea>div>div>textarea { font-family: 'Inter', sans-serif; font-size: 14px; }
-    .release-card { padding: 20px; border: 1px solid #e1e4e8; border-radius: 8px; background-color: white; margin-bottom: 20px; }
+    .stButton>button { border-radius: 5px; height: 3em; background-color: #1E293B; color: white; }
+    .status-card { padding: 15px; border-radius: 10px; border: 1px solid #ddd; background-color: #f9f9f9; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- 2. THE INTELLIGENCE ENGINE ---
-class AlationIntelligence:
+# --- 2. INTELLIGENCE LOGIC ---
+class AlationIntel:
     def __init__(self, api_key):
         genai.configure(api_key=api_key)
         self.model = genai.GenerativeModel('gemini-1.5-flash')
-        # Point this to your published Sphinx llms.txt
         self.llms_txt_url = "https://www.alation.com/docs/en/latest/llms.txt"
 
     def get_published_context(self):
@@ -33,112 +30,94 @@ class AlationIntelligence:
             return "General Alation Product Context"
 
     def draft_slack_reply(self, question, context):
-        prompt = f"Using this context: {context}\n\nDraft a polite Slack reply for this question: {question}"
+        prompt = f"Using this official Alation context: {context}\n\nDraft a concise Slack reply to this question: {question}"
         return self.model.generate_content(prompt).text
 
     def draft_release_summary(self, tech_notes, context):
-        prompt = f"""
-        Context: {context}
-        Technical Notes: {tech_notes}
-        
-        Task: Create a 'Stakeholder Release Summary' for Customer Success and Sales.
-        Format: HTML. 
-        Focus on: Business value, 'Why this matters', and links to official docs.
-        Tone: Professional, Alation-branded.
-        """
+        prompt = f"Using this context: {context}\n\nTransform these tech notes into a business-value email summary for CS and Sales: {tech_notes}"
         return self.model.generate_content(prompt).text
 
-# --- 3. COMMUNICATIONS (SLACK & GMAIL) ---
-def send_release_email(to_email, subject, body_html, sender_email, app_password):
-    msg = MIMEMultipart()
-    msg['From'] = f"AlationDoc Updates <{sender_email}>"
-    msg['To'] = to_email
-    msg['Subject'] = subject
-    msg.attach(MIMEText(body_html, 'html'))
-    
-    try:
-        with smtplib.SMTP("smtp.gmail.com", 587) as server:
-            server.starttls()
-            server.login(sender_email, app_password)
-            server.send_message(msg)
-        return True
-    except Exception as e:
-        st.error(f"Email Error: {e}")
-        return False
-
-def post_slack_reply(token, channel, thread_ts, text):
-    url = "https://slack.com/api/chat.postMessage"
-    headers = {"Authorization": f"Bearer {token}"}
-    payload = {"channel": channel, "thread_ts": thread_ts, "text": text}
-    res = requests.post(url, json=payload, headers=headers).json()
-    return res.get("ok")
-
-# --- 4. MAIN UI DASHBOARD ---
+# --- 3. UI LAYOUT ---
 def main():
     st.title("📑 AlationDoc Communicator")
-    
-    # Secrets Check
-    try:
-        creds = st.secrets
-        intel = AlationIntelligence(creds["GEMINI_API_KEY"])
-    except:
-        st.error("Please set GEMINI_API_KEY in Streamlit Secrets.")
-        st.stop()
+    st.info("The self-service hub for Doc-Rotation and Release Management.")
+
+    # --- SIDEBAR: SELF-SERVICE CREDENTIALS ---
+    with st.sidebar:
+        st.header("👤 Your Credentials")
+        st.caption("These are not stored; they stay in your session.")
+        
+        user_gemini_key = st.text_input("Gemini API Key", type="password")
+        
+        st.divider()
+        st.subheader("✉️ Gmail SMTP Settings")
+        user_email = st.text_input("Your Alation/Gmail Email")
+        user_app_pwd = st.text_input("Gmail App Password", type="password", help="Generated in Google Account > Security")
+        
+        if not user_gemini_key:
+            st.warning("Enter your Gemini Key to begin.")
+            st.stop()
+        
+        intel = AlationIntel(user_gemini_key)
 
     tab1, tab2 = st.tabs(["🧵 Slack Response Assistant", "✉️ Release Summary Dispatcher"])
 
-    # --- TAB 1: SLACK TRIAGE ---
+    # --- TAB 1: SLACK ASSISTANT (Manual Copy-Paste Mode) ---
     with tab1:
-        st.subheader("Internal #Alation-doc Rotation")
-        if st.button("📥 Pull Latest Slack Messages"):
-            # Logic to fetch from Slack API
-            st.session_state.messages = [{"ts": "123", "text": "How do I set up OIDC?", "user": "U1"}] # Example
+        st.header("Internal Doc-Gap Assistant")
+        st.write("Since Slack Apps are restricted, use this to draft perfect, brand-accurate replies.")
         
-        if "messages" in st.session_state:
-            for m in st.session_state.messages:
-                with st.expander(f"Question: {m['text']}"):
-                    if st.button("🧠 Draft AI Reply", key=f"d_{m['ts']}"):
-                        ctx = intel.get_published_context()
-                        st.session_state[f"rep_{m['ts']}"] = intel.draft_slack_reply(m['text'], ctx)
-                    
-                    if f"rep_{m['ts']}" in st.session_state:
-                        final_msg = st.text_area("Final Reply:", value=st.session_state[f"rep_{m['ts']}"], key=f"t_{m['ts']}")
-                        if st.button("🚀 Post to Slack Thread", key=f"p_{m['ts']}"):
-                            if post_slack_reply(creds["SLACK_USER_TOKEN"], creds["DOC_CHANNEL_ID"], m['ts'], final_msg):
-                                st.success("Replied!")
-
-    # --- TAB 2: RELEASE SUMMARY ---
-    with tab2:
-        st.subheader("Multi-Channel Release Dispatcher")
-        raw_tech_notes = st.text_area("Paste Technical GitHub PR Notes / RST Content...", height=200)
+        user_question = st.text_area("Paste the Slack question here:", placeholder="e.g., How do I enable OIDC for Okta?")
         
-        if st.button("✨ Generate Stakeholder Summary"):
-            with st.spinner("Translating technical notes to business value..."):
+        if st.button("🧠 Draft Official Response"):
+            with st.spinner("Analyzing published docs..."):
                 ctx = intel.get_published_context()
-                st.session_state.summary_html = intel.draft_release_summary(raw_tech_notes, ctx)
+                reply = intel.draft_slack_reply(user_question, ctx)
+                st.session_state.slack_draft = reply
         
-        if "summary_html" in st.session_state:
-            st.markdown("### Preview: Stakeholder Email")
-            st.divider()
-            st.markdown(st.session_state.summary_html, unsafe_allow_html=True)
-            st.divider()
+        if "slack_draft" in st.session_state:
+            st.success("Draft ready! Copy it to the Slack thread.")
+            st.text_area("Reply Content:", value=st.session_state.slack_draft, height=200)
+            st.button("📋 Copy to Clipboard (Simulated)")
+
+    # --- TAB 2: RELEASE SUMMARY & EMAIL ---
+    with tab2:
+        st.header("Release Summary Hub")
+        tech_notes = st.text_area("Paste Technical PR/RST Notes:", height=150)
+        
+        if st.button("✨ Generate Stakeholder Email"):
+            with st.spinner("Generating..."):
+                ctx = intel.get_published_context()
+                st.session_state.email_body = intel.draft_release_summary(tech_notes, ctx)
+        
+        if "email_body" in st.session_state:
+            st.markdown("### Preview")
+            st.markdown(f"<div class='status-card'>{st.session_state.email_body}</div>", unsafe_allow_html=True)
             
-            # Email Dispatch Section
-            st.subheader("📧 Dispatch to Stakeholders")
-            target_email = st.text_input("Recipient(s)", "cs-team@alation.com, sales-enablement@alation.com")
-            email_subject = st.text_input("Email Subject", "Product Spotlight: Latest Alation Updates")
+            st.divider()
+            st.subheader("🚀 Dispatch via Your Gmail")
+            recipient = st.text_input("To:", "stakeholders@alation.com")
+            subject = st.text_input("Subject:", "Product Update: New Features & Documentation")
             
-            if st.button("🚀 Send Release Email"):
-                success = send_release_email(
-                    target_email, 
-                    email_subject, 
-                    st.session_state.summary_html, 
-                    creds["MY_EMAIL"], 
-                    creds["GMAIL_APP_PWD"]
-                )
-                if success:
-                    st.balloons()
-                    st.success(f"Release summary dispatched to {target_email}!")
+            if st.button("📧 Send Email Now"):
+                if not user_email or not user_app_pwd:
+                    st.error("Please enter your Email and App Password in the sidebar.")
+                else:
+                    try:
+                        msg = MIMEMultipart()
+                        msg['From'] = user_email
+                        msg['To'] = recipient
+                        msg['Subject'] = subject
+                        msg.attach(MIMEText(st.session_state.email_body, 'plain')) # Using plain for reliability
+                        
+                        with smtplib.SMTP("smtp.gmail.com", 587) as server:
+                            server.starttls()
+                            server.login(user_email, user_app_pwd)
+                            server.send_message(msg)
+                        st.balloons()
+                        st.success(f"Email sent from {user_email} to {recipient}!")
+                    except Exception as e:
+                        st.error(f"Failed to send: {e}")
 
 if __name__ == "__main__":
     main()
